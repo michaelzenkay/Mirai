@@ -12,10 +12,13 @@ We note that this code-base is an extension of [OncoNet](https://github.com/yala
 This repository is intended for researchers assessing the manuscript and researching model development and validation.  The code base is not intended to be deployed for generating predictions for use in clinical-decision making or for any other clinical use.  You bear sole responsibility for your use of Mirai.
 
 ## Aside on Software Depedencies
-This code assumes python3.6 and a Linux environment.
+This code assumes python3.6+ and a Linux environment (also tested on Windows).
 The package requirements can be install with pip:
 
 `pip install -r requirements.txt`
+
+### scikit-learn Compatibility Note
+The original calibrator snapshot (`MIRAI_FULL_PRED_RF.callibrator.p`) was pickled with scikit-learn ~0.20 and uses `sklearn.svm.classes`, which was removed in scikit-learn >=0.22. If you get `ModuleNotFoundError: No module named 'sklearn.svm.classes'`, use the updated calibrator snapshot `Mirai_pred_rf_callibrator_mar12_2022.p` instead (compatible with scikit-learn 0.23+). The calibrator loading code (`load_calibrator` in `scripts/main.py`) automatically patches internal sklearn attribute renames between versions 0.23 and 1.7+.
 
 If you are familiar with docker, you can also directly leverage the OncoServe [Mirai docker container](https://www.dropbox.com/s/k0wq2z7xqr95y3b/oncoserve_mirai.0.5.0.tar?dl=0) which has all the depedencies preinstalled and the trained Mirai model (see below).
 
@@ -93,6 +96,23 @@ What you need to validate the model:
 Before running `validate.sh`, make sure to replace `demo/sample_metadata.csv` with the path to your metadata path and to replace `demo/validation_output.csv` to wherever you want predictions will be saved.
 
 After running `validate.sh`, our code-base will print out the AUC for each time-point and save the predictions for each mammogram in `prediction_save_path`. For an example of the output file format, see `demo/validation_output.csv`. The key `patient_exam_id` is defined as `patient_id \tab exam_id`.
+
+### Programmatic Inference API
+For calling Mirai from Python without command-line argument manipulation, use `scripts/infer.py`:
+
+```python
+from scripts.infer import predict
+
+df = predict(
+    metadata_csv="path/to/metadata.csv",
+    model_dir="path/to/snapshots/",
+    calibrate=True,          # apply Platt scaling (default)
+    output_csv="results.csv" # optional, save to file
+)
+# df has columns: patient_exam_id, 1_year_risk, ..., 5_year_risk
+```
+
+The `model_dir` is auto-scanned for `*Base*` (image encoder), `*Transformer*` (transformer), and `*callibrator*` (calibrator) snapshot files. The newer `mar12_2022` calibrator is preferred automatically.
 
 ### How to refine the model
 To finetune Mirai for research purposes, you can use the following commands: `sh demo/finetune.sh`

@@ -1,7 +1,6 @@
 import pickle
 from os.path import dirname, realpath
 import sys
-import git
 sys.path.append(dirname(dirname(realpath(__file__))))
 import torch
 import onconet.datasets.factory as dataset_factory
@@ -14,22 +13,63 @@ import warnings
 import onconet.learn.state_keeper as state
 from onconet.utils.get_dataset_stats import get_dataset_stats
 import onconet.utils.stats as stats
-import pdb
 import csv
 
-#Constants
 DATE_FORMAT_STR = "%Y-%m-%d:%H-%M-%S"
 
-if __name__ == '__main__':
-    args = parsing.parse_args()
+
+def load_calibrator(path):
+    """Load a calibrator pickle, handling sklearn version mismatches."""
+    try:
+        calibrator = pickle.load(open(path, 'rb'))
+        _patch_calibrator(calibrator)
+        return calibrator
+    except ModuleNotFoundError as e:
+        print("WARNING: Could not load calibrator from {}".format(path))
+        print("  Cause: {}".format(e))
+        print("  This usually means the pickle was saved with an older sklearn.")
+        print("  Try using Mirai_pred_rf_callibrator_mar12_2022.p instead.")
+        return None
+
+
+def _patch_calibrator(calibrator):
+    """Fix sklearn version mismatches in pickled CalibratedClassifierCV objects.
+
+    Handles renames across sklearn versions:
+    - 0.23->0.24: _CalibratedClassifier.calibrators -> calibrators_, classes -> classes_
+    - 1.2+: CalibratedClassifierCV.base_estimator -> estimator
+    """
+    items = calibrator.values() if isinstance(calibrator, dict) else calibrator
+    for cal in items:
+        if not hasattr(cal, 'calibrated_classifiers_'):
+            continue
+        # base_estimator -> estimator (sklearn 1.2+)
+        if not hasattr(cal, 'estimator') and hasattr(cal, 'base_estimator'):
+            cal.estimator = cal.base_estimator
+        for cc in cal.calibrated_classifiers_:
+            if getattr(cc, 'classes', None) is None and hasattr(cc, 'classes_'):
+                cc.classes = cc.classes_
+            if not hasattr(cc, 'calibrators'):
+                cc.calibrators = cc.__dict__.get('calibrators_', [])
+            if not hasattr(cc, 'estimator') and hasattr(cc, 'base_estimator'):
+                cc.estimator = cc.base_estimator
+
+
+def run(args):
+    """Run the OncoNet pipeline (train/dev/test) with the given args."""
     if args.ignore_warnings:
         warnings.simplefilter('ignore')
 
-    repo = git.Repo(search_parent_directories=True)
-    commit  = repo.head.object
-    args.commit = commit.hexsha
-    print("OncoNet main running from commit: \n\n{}\n{}author: {}, date: {}".format(
-        commit.hexsha, commit.message, commit.author, commit.committed_date))
+    try:
+        import git
+        repo = git.Repo(search_parent_directories=True)
+        commit = repo.head.object
+        args.commit = commit.hexsha
+        print("OncoNet main running from commit: \n\n{}\n{}author: {}, date: {}".format(
+            commit.hexsha, commit.message, commit.author, commit.committed_date))
+    except Exception:
+        args.commit = "unknown"
+        print("OncoNet main running (git info unavailable)")
 
     if args.get_dataset_stats:
         print("\nComputing image mean and std...")
@@ -120,8 +160,9 @@ if __name__ == '__main__':
             exams.extend( args.test_stats['exams'])
             probs.extend( args.test_stats['probs'])
         legend = ['patient_exam_id']
+        calibrator = None
         if args.callibrator_snapshot is not None:
-            callibrator = pickle.load(open(args.callibrator_snapshot,'rb'))
+            calibrator = load_calibrator(args.callibrator_snapshot)
         for i in range(args.max_followup):
             legend.append("{}_year_risk".format(i+1))
         export = {}
@@ -133,8 +174,8 @@ if __name__ == '__main__':
                 for i in range(args.max_followup):
                     key = "{}_year_risk".format(i+1)
                     raw_val = arr[i]
-                    if args.callibrator_snapshot is not None:
-                        val = callibrator[i].predict_proba([[raw_val]])[0,1]
+                    if calibrator is not None:
+                        val = calibrator[i].predict_proba([[raw_val]])[0,1]
                     else:
                         val = raw_val
                     export[key] = val
@@ -142,3 +183,6 @@ if __name__ == '__main__':
         print("Exported predictions to {}".format(args.prediction_save_path))
 
 
+if __name__ == '__main__':
+    args = parsing.parse_args()
+    run(args)
